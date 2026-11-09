@@ -388,7 +388,7 @@ Une nuit, Léo entend un bruit étrange. On dirait quelqu'un qui souffle très f
 
 Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit une gorgée d'eau et repart vers la haie. Léo retourne se coucher. Demain, il dessinera son ami dans son carnet.`;
 
-  const APP_VERSION = "v8 · 9 nov. 2026";
+  const APP_VERSION = "v9 · 9 nov. 2026";
   const DURATION = 60;
   const SERIES = 4;
   const $ = (id) => document.getElementById(id);
@@ -459,17 +459,19 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
   function splitWords(tok) {
     return splitElision(tok).flatMap((p) => p.replace(/(\p{L})-(?=\p{L})/gu, "$1-\u0000").split("\u0000"));
   }
-  // Un nombre en chiffres compte pour les mots prononcés, comme sur les fiches :
-  // 1937 = mille neuf cent trente-sept = 4 ; 1992 = mille neuf cent quatre vingt douze = 6.
-  // « trente-sept », « vingt-cinq » comptent 1 ; « soixante-dix » et « quatre-vingt… » se décomposent.
-  function under100(r) {
-    if (!r) return 0;
-    if ([21, 31, 41, 51, 61, 71].includes(r)) return 3; // vingt et un, soixante et onze
-    if (r >= 70 && r < 80) return 2;                     // soixante + dix…dix-neuf
-    if (r === 80) return 2;                              // quatre vingts
-    if (r > 80) return 3;                                // quatre vingt + un…dix-neuf
-    return 1;
+  // Un nombre en chiffres compte pour les mots prononcés, avec la même règle que le texte :
+  // le trait d'union sépare. 25 = vingt-cinq = 2 ; 1937 = mille neuf cent trente-sept = 5 ; 1992 = 6.
+  const UNITS = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize"];
+  const TENS = { 2: "vingt", 3: "trente", 4: "quarante", 5: "cinquante", 6: "soixante" };
+  function spell100(r) {
+    if (r < 17) return UNITS[r];
+    if (r < 20) return "dix-" + UNITS[r - 10];
+    const t = Math.floor(r / 10), u = r % 10;
+    if (t < 7) return TENS[t] + (u === 1 ? " et un" : u ? "-" + UNITS[u] : "");
+    if (t === 7) return "soixante" + (r === 71 ? " et onze" : "-" + spell100(r - 60));
+    return "quatre-vingt" + (r === 80 ? "s" : "-" + spell100(r - 80));
   }
+  function under100(r) { return r ? spell100(r).split(/[\s-]+/).length : 0; }
   function under1000(n) {
     const h = Math.floor(n / 100);
     return (h ? (h === 1 ? 1 : 2) : 0) + under100(n % 100);
