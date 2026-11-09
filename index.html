@@ -121,6 +121,7 @@ button { font: inherit; cursor: pointer; }
 .session-lbl { display: flex; flex-direction: column; min-width: 0; }
 .session-lbl strong { font-family: var(--f-display); font-weight: 600; font-size: 1.05rem; }
 .bar-main .spacer { flex: 1 1 auto; }
+#start-btn { min-width: 12.5em; }
 .progress { height: 4px; border-radius: 2px; background: var(--rule-strong); overflow: hidden; }
 .progress i { display: block; height: 100%; width: 0; background: var(--blue); }
 .progress.late i { background: var(--red); }
@@ -285,11 +286,11 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
           <strong id="session-lbl">1 sur 4</strong>
         </div>
         <span class="spacer"></span>
+        <button class="btn small mic-chip" id="mic-btn" type="button" data-s="unknown">Tester le micro</button>
         <div class="seg" role="group" aria-label="Mode de comptage">
           <button type="button" id="mode-mic" aria-pressed="true">Micro</button>
           <button type="button" id="mode-manual" aria-pressed="false">Manuel</button>
         </div>
-        <button class="btn small mic-chip" id="mic-btn" type="button" data-s="unknown">Tester le micro</button>
         <button class="btn primary" id="start-btn" type="button">Lancer</button>
       </div>
       <div class="progress" id="progress"><i id="progress-fill"></i></div>
@@ -388,7 +389,7 @@ Une nuit, Léo entend un bruit étrange. On dirait quelqu'un qui souffle très f
 
 Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit une gorgée d'eau et repart vers la haie. Léo retourne se coucher. Demain, il dessinera son ami dans son carnet.`;
 
-  const APP_VERSION = "v9 · 9 nov. 2026";
+  const APP_VERSION = "v10 · 9 nov. 2026";
   const DURATION = 60;
   const SERIES = 4;
   const $ = (id) => document.getElementById(id);
@@ -409,6 +410,8 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
   if (!SR) mode = "manual";
   let micBlocked = false;
   let micStatus = "unknown"; // unknown | testing | ok | ko
+  const MIC_KEY = "fluence.micOk";
+  if (SR && store.get(MIC_KEY, false)) micStatus = "ok"; // test déjà réussi dans ce navigateur
 
   /* ---------- Normalisation & comparaison ---------- */
   const NUM = { 0: "zero", 1: "un", 2: "deux", 3: "trois", 4: "quatre", 5: "cinq", 6: "six", 7: "sept", 8: "huit", 9: "neuf", 10: "dix", 11: "onze", 12: "douze", 13: "treize", 14: "quatorze", 15: "quinze", 16: "seize", 17: "dix-sept", 18: "dix-huit", 19: "dix-neuf", 20: "vingt", 30: "trente", 40: "quarante", 50: "cinquante", 60: "soixante", 100: "cent", 1000: "mille" };
@@ -794,6 +797,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     micDead = true;
     micBlocked = true;
     micStatus = "ko";
+    store.set(MIC_KEY, false);
     if (cur.phase === "running" || cur.phase === "countdown") {
       cur.mode = "manual";
       setHint("Le micro a lâché (" + (code || "erreur") + ") : la session continue en manuel. Touchez les mots mal lus, puis le dernier mot au bip. Refaites le test du micro ensuite.", true);
@@ -1180,6 +1184,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
       li.append(c);
     }
     micStatus = "ko";
+    store.set(MIC_KEY, false);
     $("say").textContent = "";
     $("speech-go").hidden = true;
     $("mictest-run").hidden = false;
@@ -1240,9 +1245,23 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     $("say").textContent = "";
     $("mictest-run").hidden = false;
     micStatus = "ok"; micBlocked = false;
+    store.set(MIC_KEY, true);
     setHint("Micro prêt. Vous pouvez lancer la session.");
     paint();
+    setTimeout(() => { if (run === testRun && micStatus === "ok") collapseMicTest(); }, 1400);
   };
+
+  function collapseMicTest() {
+    const el = $("mictest");
+    if (el.hidden) return;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches || !el.animate) { el.hidden = true; return; }
+    el.style.overflow = "hidden";
+    const anim = el.animate(
+      [{ height: el.offsetHeight + "px", opacity: 1 }, { height: "0px", opacity: 0, paddingTop: "0px", paddingBottom: "0px", borderTopWidth: "0px", borderBottomWidth: "0px" }],
+      { duration: 380, easing: "cubic-bezier(.4, 0, .2, 1)" }
+    );
+    anim.onfinish = () => { el.hidden = true; el.style.overflow = ""; };
+  }
 
   $("mic-btn").onclick = () => runMicTest();
   $("mictest-run").onclick = () => runMicTest();
@@ -1251,7 +1270,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
 
   try {
     navigator.permissions?.query({ name: "microphone" }).then((p) => {
-      if (p.state === "denied" && micStatus === "unknown") { micStatus = "ko"; paint(); }
+      if (p.state === "denied") { micStatus = "ko"; store.set(MIC_KEY, false); paint(); }
     }).catch(() => {});
   } catch {}
 
