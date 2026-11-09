@@ -197,7 +197,6 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
 .history .empty { color: var(--muted); font-size: .92rem; margin: 0; }
 .foot { color: var(--muted); font-size: .82rem; margin: 0; }
 .version { position: fixed; z-index: 3; right: max(8px, env(safe-area-inset-right, 0px)); bottom: calc(6px + env(safe-area-inset-bottom, 0px)); font-family: var(--f-mono); font-size: .72rem; color: var(--muted); background: var(--bg); padding: .1rem .4rem; border-radius: .3rem; pointer-events: none; }
-.w.flag::after { content: "?"; font-size: .6em; font-weight: 700; color: var(--red); vertical-align: super; margin-left: .05em; }
 
 /* Replay */
 .sheet-wrap { position: relative; }
@@ -389,7 +388,7 @@ Une nuit, Léo entend un bruit étrange. On dirait quelqu'un qui souffle très f
 
 Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit une gorgée d'eau et repart vers la haie. Léo retourne se coucher. Demain, il dessinera son ami dans son carnet.`;
 
-  const APP_VERSION = "v11 · 9 nov. 2026";
+  const APP_VERSION = "v12 · 9 nov. 2026";
   const DURATION = 60;
   const SERIES = 4;
   const $ = (id) => document.getElementById(id);
@@ -621,7 +620,6 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     for (let i = 0; i < words.length; i++) {
       const c = words[i].el.classList;
       c.toggle("err", cur.errors.has(i));
-      c.toggle("flag", cur.flags.has(i) && cur.errors.has(i));
       c.toggle("unheard", review && cur.unheard.has(i) && !cur.errors.has(i));
       c.toggle("beyond", review && i > cur.lastIdx);
       c.toggle("last", review && i === cur.lastIdx);
@@ -693,7 +691,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
       else if (mode === "mic") t = "Lancez, attendez le 3-2-1 puis lisez à voix haute. Le bip marque la fin de la minute.";
       else t = "Mode manuel : pendant la lecture, touchez les mots mal lus. Au bip, touchez le dernier mot lu.";
     } else if (cur.phase === "countdown") t = "Prêt…";
-    else if (cur.phase === "running") t = cur.mode === "mic" ? "On écoute. Touchez un mot qui vous semble faux : il comptera comme faute, marqué « ? » pour le réécouter après." : "Touchez les mots mal lus au fil de la lecture.";
+    else if (cur.phase === "running") t = cur.mode === "mic" ? "On écoute. Touchez un mot qui vous semble faux : il comptera comme faute, à réécouter après." : "Touchez les mots mal lus au fil de la lecture.";
     else if (cur.phase === "ending") t = "Analyse de la lecture…";
     else if (cur.phase === "review") t = tool === "end"
       ? "Touchez le dernier mot lu (là où le bip a sonné)."
@@ -721,7 +719,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     else cur.errors.add(i);
     cur.unheard.delete(i);
   }
-  // Pendant la lecture (micro ou manuel) : le mot touché compte comme faute, marqué « ? » pour être réécouté.
+  // Pendant la lecture (micro ou manuel) : le mot touché compte comme faute ; son instant sert de repère pour la réécoute.
   function toggleFlag(i) {
     if (cur.flags.has(i)) { cur.flags.delete(i); cur.errors.delete(i); }
     else { cur.flags.add(i); cur.errors.add(i); stamps.set(i, performance.now()); }
