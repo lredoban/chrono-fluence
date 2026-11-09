@@ -195,6 +195,8 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
 .history .s { font-family: var(--f-mono); font-weight: 700; color: var(--blue); }
 .history .empty { color: var(--muted); font-size: .92rem; margin: 0; }
 .foot { color: var(--muted); font-size: .82rem; margin: 0; }
+.version { position: fixed; z-index: 3; right: max(8px, env(safe-area-inset-right, 0px)); bottom: calc(6px + env(safe-area-inset-bottom, 0px)); font-family: var(--f-mono); font-size: .72rem; color: var(--muted); background: var(--bg); padding: .1rem .4rem; border-radius: .3rem; pointer-events: none; }
+.w.flag::after { content: "?"; font-size: .6em; font-weight: 700; color: var(--red); vertical-align: super; margin-left: .05em; }
 
 /* Replay */
 .sheet-wrap { position: relative; }
@@ -372,6 +374,8 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
   </section>
 </div>
 
+<div class="version" id="version"></div>
+
 <script>
 (() => {
   "use strict";
@@ -387,6 +391,7 @@ Une nuit, Léo entend un bruit étrange. On dirait quelqu'un qui souffle très f
 
 Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit une gorgée d'eau et repart vers la haie. Léo retourne se coucher. Demain, il dessinera son ami dans son carnet.`;
 
+  const APP_VERSION = "v5 · 9 nov. 2026";
   const DURATION = 60;
   const SERIES = 4;
   const $ = (id) => document.getElementById(id);
@@ -444,13 +449,28 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     return k;
   }
 
+  // Élisions comptées comme deux mots : « l'école » = « l' » + « école ». « aujourd'hui » reste un mot.
+  const ELI = /^([^\p{L}\p{N}]*(?:jusqu|lorsqu|puisqu|quoiqu|qu|[ldjmnstc])['’ʼ])(?=[\p{L}\p{N}])/iu;
+  function splitElision(tok) {
+    const parts = [];
+    let rest = tok, m;
+    while ((m = rest.match(ELI))) { parts.push(m[1]); rest = rest.slice(m[1].length); }
+    parts.push(rest);
+    return parts;
+  }
+
+  // Le micro est comparé par groupes séparés par des espaces (homophones « c'est / ses » compris), puis ramené aux mots.
   function hypKeys(text) {
-    return text.split(/\s+/).map(norm).filter(Boolean).map(soundKey);
+    return text.split(/\s+/).map((t) => {
+      const n = norm(t);
+      if (!n) return null;
+      return { key: soundKey(n), parts: splitElision(t).map(norm).filter(Boolean).map(soundKey) };
+    }).filter(Boolean);
   }
 
   // Alignement semi-global : le lecteur part du début et s'arrête n'importe où.
   function align(hyp) {
-    const n = words.length, m = hyp.length;
+    const n = units.length, m = hyp.length;
     if (!m) return { lastIdx: -1, errors: [], unheard: [], inserted: 0 };
     const W = m + 1;
     const dp = new Float64Array((n + 1) * W);
@@ -458,9 +478,9 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     for (let j = 1; j <= m; j++) { dp[j] = j; bt[j] = 2; }
     for (let i = 1; i <= n; i++) {
       dp[i * W] = i; bt[i * W] = 1;
-      const key = words[i - 1].key;
+      const key = units[i - 1].key;
       for (let j = 1; j <= m; j++) {
-        let best = dp[(i - 1) * W + j - 1] + (key === hyp[j - 1] ? 0 : 1), b = 0;
+        let best = dp[(i - 1) * W + j - 1] + (key === hyp[j - 1].key ? 0 : 1), b = 0;
         const del = dp[(i - 1) * W + j] + 1;
         const ins = dp[i * W + j - 1] + 1;
         if (del < best) { best = del; b = 1; }
@@ -475,29 +495,39 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     let inserted = 0, i = bi, j = m;
     while (i > 0 || j > 0) {
       const b = bt[i * W + j];
-      if (i > 0 && j > 0 && b === 0) { if (words[i - 1].key !== hyp[j - 1]) subs.push(i - 1); i--; j--; }
+      if (i > 0 && j > 0 && b === 0) { if (units[i - 1].key !== hyp[j - 1].key) subs.push([i - 1, j - 1]); i--; j--; }
       else if (i > 0 && (b === 1 || j === 0)) { dels.push(i - 1); i--; }
       else { inserted++; j--; }
     }
-    // Les longues suites de mots manquants viennent souvent d'un trou du micro : on les signale sans les compter.
+    const errors = [];
+    subs.forEach(([u, h]) => {
+      const U = units[u], hp = hyp[h].parts;
+      if (hp.length === U.parts.length) {
+        let any = false;
+        U.parts.forEach((k, x) => { if (k !== hp[x]) { errors.push(U.w0 + x); any = true; } });
+        if (!any) errors.push(U.w1);
+      } else errors.push(U.w1);
+    });
+    // Les longues suites de groupes manquants viennent souvent d'un trou du micro : on les signale sans les compter.
     dels.sort((a, b) => a - b);
-    const errors = [...subs], unheard = [];
+    const unheard = [];
     for (let k = 0; k < dels.length;) {
       let e = k;
       while (e + 1 < dels.length && dels[e + 1] === dels[e] + 1) e++;
-      const run = dels.slice(k, e + 1);
-      (run.length >= 4 ? unheard : errors).push(...run);
+      const ws = [];
+      for (let u = k; u <= e; u++) for (let w = units[dels[u]].w0; w <= units[dels[u]].w1; w++) ws.push(w);
+      (e - k + 1 >= 4 ? unheard : errors).push(...ws);
       k = e + 1;
     }
-    return { lastIdx: bi - 1, errors, unheard, inserted };
+    return { lastIdx: bi ? units[bi - 1].w1 : -1, errors, unheard, inserted };
   }
 
   /* ---------- Rendu du texte ---------- */
   const sheet = $("sheet");
-  let words = [];
+  let words = [], units = [];
 
   function buildSheet() {
-    words = [];
+    words = []; units = [];
     sheet.textContent = "";
     if (state.title) {
       const h = document.createElement("h3");
@@ -510,14 +540,19 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
       p.split(/(\s+)/).forEach((tok) => {
         if (!tok) return;
         if (/^\s+$/.test(tok)) { el.append(" "); return; }
-        const n = norm(tok);
-        if (!n) { el.append(tok); return; }
-        const span = document.createElement("span");
-        span.className = "w";
-        span.textContent = tok;
-        span.dataset.i = String(words.length);
-        words.push({ key: soundKey(n), el: span });
-        el.append(span);
+        const w0 = words.length, parts = [];
+        splitElision(tok).forEach((part) => {
+          const n = norm(part);
+          if (!n) { el.append(part); return; }
+          const span = document.createElement("span");
+          span.className = "w";
+          span.textContent = part;
+          span.dataset.i = String(words.length);
+          words.push({ key: soundKey(n), el: span });
+          parts.push(soundKey(n));
+          el.append(span);
+        });
+        if (words.length > w0) units.push({ key: soundKey(norm(tok)), w0, w1: words.length - 1, parts });
       });
       sheet.append(el);
     });
@@ -530,7 +565,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
   let cur = freshSession();
   let tool = "err";
   function freshSession() {
-    return { phase: "idle", lastIdx: -1, liveIdx: -1, errors: new Set(), unheard: new Set(), transcript: "", inserted: 0, mode: mode };
+    return { phase: "idle", lastIdx: -1, liveIdx: -1, errors: new Set(), unheard: new Set(), flags: new Set(), transcript: "", inserted: 0, mode: mode };
   }
 
   function stats() {
@@ -546,13 +581,14 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     for (let i = 0; i < words.length; i++) {
       const c = words[i].el.classList;
       c.toggle("err", cur.errors.has(i));
+      c.toggle("flag", cur.flags.has(i) && cur.errors.has(i));
       c.toggle("unheard", review && cur.unheard.has(i) && !cur.errors.has(i));
       c.toggle("beyond", review && i > cur.lastIdx);
       c.toggle("last", review && i === cur.lastIdx);
       c.toggle("read", running && cur.mode === "mic" && i <= cur.liveIdx);
     }
     sheet.dataset.phase = cur.phase;
-    sheet.dataset.tap = running && cur.mode === "manual" ? "1" : "0";
+    sheet.dataset.tap = running ? "1" : "0";
     renderBar();
   }
 
@@ -616,7 +652,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
       else if (mode === "mic") t = "Lancez, attendez le 3-2-1 puis lisez à voix haute. Le bip marque la fin de la minute.";
       else t = "Mode manuel : pendant la lecture, touchez les mots mal lus. Au bip, touchez le dernier mot lu.";
     } else if (cur.phase === "countdown") t = "Prêt…";
-    else if (cur.phase === "running") t = cur.mode === "mic" ? "On écoute. Les mots reconnus se surlignent en vert." : "Touchez les mots mal lus au fil de la lecture.";
+    else if (cur.phase === "running") t = cur.mode === "mic" ? "On écoute. Touchez un mot qui vous semble faux : il comptera comme faute, marqué « ? » pour le réécouter après." : "Touchez les mots mal lus au fil de la lecture.";
     else if (cur.phase === "ending") t = "Analyse de la lecture…";
     else if (cur.phase === "review") t = tool === "end"
       ? "Touchez le dernier mot lu (là où le bip a sonné)."
@@ -629,7 +665,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     const w = e.target.closest(".w");
     if (!w) return;
     const i = Number(w.dataset.i);
-    if (cur.phase === "running" && cur.mode === "manual") toggleErr(i);
+    if (cur.phase === "running") toggleFlag(i);
     else if (cur.phase === "review") {
       if (tool === "end") { cur.lastIdx = i; tool = "err"; setHint(null); }
       else if (audioBuf) { openPop(i); return; }
@@ -638,9 +674,14 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     paint();
   });
   function toggleErr(i) {
-    if (cur.errors.has(i)) cur.errors.delete(i);
-    else { cur.errors.add(i); if (cur.phase === "running") stamps.set(i, performance.now()); }
+    if (cur.errors.has(i)) { cur.errors.delete(i); cur.flags.delete(i); }
+    else cur.errors.add(i);
     cur.unheard.delete(i);
+  }
+  // Pendant la lecture (micro ou manuel) : le mot touché compte comme faute, marqué « ? » pour être réécouté.
+  function toggleFlag(i) {
+    if (cur.flags.has(i)) { cur.flags.delete(i); cur.errors.delete(i); }
+    else { cur.flags.add(i); cur.errors.add(i); stamps.set(i, performance.now()); }
   }
 
   $("tool-err").onclick = () => { tool = "err"; paint(); };
@@ -830,7 +871,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     pop.hidden = true;
   }
   $("pop-play").onclick = () => { if (popIdx >= 0) playWord(popIdx); };
-  $("pop-ok").onclick = () => { if (popIdx < 0) return; cur.errors.delete(popIdx); cur.unheard.delete(popIdx); stopPlaying(); closePop(); paint(); };
+  $("pop-ok").onclick = () => { if (popIdx < 0) return; cur.errors.delete(popIdx); cur.flags.delete(popIdx); cur.unheard.delete(popIdx); stopPlaying(); closePop(); paint(); };
   $("pop-err").onclick = () => { if (popIdx < 0) return; cur.errors.add(popIdx); cur.unheard.delete(popIdx); stopPlaying(); closePop(); paint(); };
   document.addEventListener("click", (e) => { if (popIdx >= 0 && !pop.contains(e.target) && !e.target.closest(".w")) { stopPlaying(); closePop(); } });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && popIdx >= 0) { stopPlaying(); closePop(); } });
@@ -900,8 +941,8 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
       const a = align(hypKeys(text));
       cur.transcript = text;
       cur.lastIdx = a.lastIdx;
-      cur.errors = new Set(a.errors);
-      cur.unheard = new Set(a.unheard);
+      cur.errors = new Set([...a.errors, ...cur.flags]);
+      cur.unheard = new Set(a.unheard.filter((k) => !cur.flags.has(k)));
       cur.inserted = a.inserted;
       if (a.lastIdx < 0) { tool = "end"; setHint("Le micro n'a rien reconnu. Touchez le dernier mot lu, puis les fautes.", true); }
       else tool = "err";
@@ -1246,7 +1287,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
   $("cancel-edit").onclick = closeEditor;
   $("apply-text").onclick = () => {
     const text = $("text-input").value.trim();
-    const count = text.split(/\s+/).map(norm).filter(Boolean).length;
+    const count = text.split(/\s+/).flatMap(splitElision).map(norm).filter(Boolean).length;
     if (count < 10) { setStatus("Le texte doit contenir au moins 10 mots.", "error"); return; }
     if (state.sessions.length && state.sessions.length < SERIES && !$("apply-text").dataset.armed) { armApply(true); return; }
     state = { title: $("title-input").value.trim(), text, sessions: [], isSample: false };
@@ -1388,6 +1429,7 @@ Recopie le texte à lire exactement, mot pour mot, avec sa ponctuation.
   })();
 
   /* ---------- Démarrage ---------- */
+  $("version").textContent = APP_VERSION;
   if (!SR) setHint("La reconnaissance vocale n'existe pas dans ce navigateur : mode manuel uniquement.", false);
   buildSheet();
   renderResults();
