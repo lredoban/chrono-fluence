@@ -388,7 +388,7 @@ Une nuit, Léo entend un bruit étrange. On dirait quelqu'un qui souffle très f
 
 Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit une gorgée d'eau et repart vers la haie. Léo retourne se coucher. Demain, il dessinera son ami dans son carnet.`;
 
-  const APP_VERSION = "v7 · 9 nov. 2026";
+  const APP_VERSION = "v8 · 9 nov. 2026";
   const DURATION = 60;
   const SERIES = 4;
   const $ = (id) => document.getElementById(id);
@@ -459,13 +459,20 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
   function splitWords(tok) {
     return splitElision(tok).flatMap((p) => p.replace(/(\p{L})-(?=\p{L})/gu, "$1-\u0000").split("\u0000"));
   }
-  // Un nombre en chiffres compte pour les mots prononcés : 1937 = mille neuf cent trente-sept = 4.
+  // Un nombre en chiffres compte pour les mots prononcés, comme sur les fiches :
+  // 1937 = mille neuf cent trente-sept = 4 ; 1992 = mille neuf cent quatre vingt douze = 6.
+  // « trente-sept », « vingt-cinq » comptent 1 ; « soixante-dix » et « quatre-vingt… » se décomposent.
+  function under100(r) {
+    if (!r) return 0;
+    if ([21, 31, 41, 51, 61, 71].includes(r)) return 3; // vingt et un, soixante et onze
+    if (r >= 70 && r < 80) return 2;                     // soixante + dix…dix-neuf
+    if (r === 80) return 2;                              // quatre vingts
+    if (r > 80) return 3;                                // quatre vingt + un…dix-neuf
+    return 1;
+  }
   function under1000(n) {
-    const h = Math.floor(n / 100), r = n % 100;
-    let c = 0;
-    if (h) c += h === 1 ? 1 : 2;
-    if (r) c += [21, 31, 41, 51, 61, 71].includes(r) ? 3 : 1;
-    return c;
+    const h = Math.floor(n / 100);
+    return (h ? (h === 1 ? 1 : 2) : 0) + under100(n % 100);
   }
   function numWords(n) {
     if (!Number.isFinite(n) || n < 0 || n >= 1e9) return 1;
