@@ -259,7 +259,7 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
       <div class="import-row">
         <button class="btn" id="import-btn" type="button">Importer une photo ou un PDF</button>
         <input type="file" id="file-input" accept="image/*,application/pdf,.pdf" hidden>
-        <span class="note" id="import-note">Photo de la fiche ou PDF numérisé. Le texte extrait arrive ci-dessous, vérifiez-le avant de valider.</span>
+        <span class="note" id="import-note">Photo de la fiche ou PDF numérisé. Le texte est lu dans le navigateur ; les compteurs de mots de la marge sont ignorés. Vérifiez-le avant de valider.</span>
       </div>
       <p class="status" id="import-status" role="status"></p>
       <div>
@@ -389,7 +389,7 @@ Une nuit, Léo entend un bruit étrange. On dirait quelqu'un qui souffle très f
 
 Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit une gorgée d'eau et repart vers la haie. Léo retourne se coucher. Demain, il dessinera son ami dans son carnet.`;
 
-  const APP_VERSION = "v10 · 9 nov. 2026";
+  const APP_VERSION = "v11 · 9 nov. 2026";
   const DURATION = 60;
   const SERIES = 4;
   const $ = (id) => document.getElementById(id);
@@ -1463,6 +1463,118 @@ Recopie le texte à lire exactement, mot pour mot, avec sa ponctuation.
     return pdfPromise;
   }
 
+  /* ---------- Lecture d'image dans le navigateur (hors Claude) ---------- */
+  // Tesseract en deux passes : la 1re repère la colonne de texte, la 2e relit seulement cette colonne.
+  // Sans ça, la colonne des compteurs dans la marge fausse l'espacement (« direque », « Ilvitenmeute »).
+  const useClaude = () => !!(sampleFn && imgLimits);
+  const pct = (arr, q) => { const v = arr.slice().sort((a, b) => a - b); return v.length ? v[Math.min(v.length - 1, Math.max(0, Math.floor(q * (v.length - 1))))] : 0; };
+  const ocrLines = (data) => (data.blocks || []).flatMap((b) => (b.paragraphs || []).flatMap((p) => (p.lines || []).map((l) => l.words || [])));
+  const letters = (t) => ((t || "").match(/\p{L}/gu) || []).length;
+
+  function textColumn(data) {
+    const alpha = ocrLines(data).flat().filter((w) => letters(w.text) >= 2);
+    if (alpha.length < 5) return null;
+    const x0 = pct(alpha.map((w) => w.bbox.x0), 0.02), x1 = pct(alpha.map((w) => w.bbox.x1), 0.98);
+    const y0 = Math.min(...alpha.map((w) => w.bbox.y0)), y1 = Math.max(...alpha.map((w) => w.bbox.y1));
+    const pad = (x1 - x0) * 0.012;
+    return { left: Math.max(0, Math.round(x0 - pad)), top: Math.max(0, Math.round(y0 - pad)), width: Math.round(x1 - x0 + 2 * pad), height: Math.round(y1 - y0 + 2 * pad) };
+  }
+
+  // Titre = dernière ligne courte avant la première ligne pleine (l'en-tête au-dessus est ignoré) ;
+  // une ligne courte finie par une ponctuation clôt le paragraphe.
+  function cleanOcrPages(pages) {
+    let title = "";
+    const paras = [];
+    pages.forEach((data, pageNo) => {
+      const lines = ocrLines(data)
+        .map((ws) => ws.filter((w) => /[\p{L}\p{N}]/u.test(w.text) || /^[!?:;«»—–…]+$/u.test(w.text)))
+        .filter((ws) => ws.some((w) => /[\p{L}\p{N}]/u.test(w.text)) && !(ws.length === 1 && /^\W*\d+\W*$/.test(ws[0].text)))
+        .map((ws) => ({ text: ws.map((w) => w.text).join(" "), x0: ws[0].bbox.x0, x1: ws[ws.length - 1].bbox.x1 }));
+      if (!lines.length) return;
+      const full = pct(lines.map((l) => l.x1 - l.x0), 0.9) || 1;
+      let first = lines.findIndex((l) => l.x1 - l.x0 >= 0.7 * full);
+      if (first < 0) first = 0;
+      if (pageNo === 0 && first > 0) title = lines[first - 1].text;
+      let cur = "";
+      lines.slice(first).forEach((l, k, body) => {
+        if (k > 0) {
+          const prev = body[k - 1];
+          if (prev.x1 - prev.x0 < 0.85 * full && /[.!?…:»"]$/.test(prev.text)) { paras.push(cur); cur = ""; }
+          else if (!(/\p{L}-$/u.test(cur) && /^\p{Ll}/u.test(l.text))) cur += " ";
+        }
+        cur += l.text;
+      });
+      if (cur) paras.push(cur);
+    });
+    const tidy = (t) => t.replace(/\s+/g, " ").replace(/[’ʼ]/g, "'").trim();
+    return { title: tidy(title), text: paras.map(tidy).filter(Boolean).join("\n") };
+  }
+
+  // PDF avec texte : on écarte aussi les éléments hors de la colonne (compteurs de mots de la marge).
+  function pdfItemsToText(items) {
+    const its = items.filter((it) => it.str && it.str.trim() && it.transform);
+    const alpha = its.filter((it) => letters(it.str) >= 2);
+    let keep = () => true;
+    if (alpha.length >= 5) {
+      const x0 = pct(alpha.map((it) => it.transform[4]), 0.02);
+      const x1 = pct(alpha.map((it) => it.transform[4] + (it.width || 0)), 0.98);
+      const tol = (x1 - x0) * 0.02;
+      keep = (it) => { const c = it.transform[4] + (it.width || 0) / 2; return c >= x0 - tol && c <= x1 + tol; };
+    }
+    return items.map((it) => (it.str && it.transform && !keep(it) ? "" : (it.str || "")) + (it.hasEOL ? "\n" : "")).join("")
+      .split("\n").filter((l) => !/^\s*\d+\s*$/.test(l)).join("\n");
+  }
+
+  let tessPromise = null, ocrProgress = null;
+  function getTess() {
+    if (!tessPromise) {
+      tessPromise = loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js")
+        .then(() => window.Tesseract.createWorker("fra", 1, { logger: (m) => { if (ocrProgress) ocrProgress(m); } }))
+        .catch((e) => { tessPromise = null; throw e; });
+    }
+    return tessPromise;
+  }
+
+  async function toCanvas(file) {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(bmp, 0, 0, c.width, c.height);
+    if (bmp.close) bmp.close();
+    return c;
+  }
+
+  async function ocrLocal(canvases) {
+    $("import-btn").disabled = true;
+    try {
+      setStatus("Chargement de la lecture de texte… (la première fois, quelques Mo à télécharger)");
+      const worker = await getTess();
+      const pages = [];
+      for (let k = 0; k < canvases.length; k++) {
+        const label = canvases.length > 1 ? " (page " + (k + 1) + "/" + canvases.length + ")" : "";
+        let pass = 0;
+        ocrProgress = (m) => { if (m.status === "recognizing text") setStatus("Lecture du texte" + label + "… " + Math.round((pass + m.progress) * 50) + " %"); };
+        const first = (await worker.recognize(canvases[k], {}, { blocks: true })).data;
+        const rect = textColumn(first);
+        pass = 1;
+        pages.push(rect ? (await worker.recognize(canvases[k], { rectangle: rect }, { blocks: true })).data : first);
+      }
+      const r = cleanOcrPages(pages);
+      if (!r.text) { setStatus("Aucun texte trouvé. Essayez une photo plus nette, prise bien à plat.", "error"); return; }
+      if (r.title) $("title-input").value = r.title;
+      $("text-input").value = r.text;
+      setStatus("Texte extrait. Relisez-le (titre, coquilles) puis validez.", "ok");
+    } catch (e) {
+      setStatus("La lecture de l'image a échoué. Vérifiez la connexion, ou collez le texte.", "error");
+    } finally {
+      ocrProgress = null;
+      $("import-btn").disabled = false;
+    }
+  }
+
   async function importFile(file) {
     const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
     try {
@@ -1475,7 +1587,7 @@ Recopie le texte à lire exactement, mot pour mot, avec sa ponctuation.
         for (let p = 1; p <= pages; p++) {
           const page = await doc.getPage(p);
           const tc = await page.getTextContent();
-          txt += tc.items.map((it) => (it.str || "") + (it.hasEOL ? "\n" : "")).join("") + "\n\n";
+          txt += pdfItemsToText(tc.items) + "\n\n";
         }
         if (txt.replace(/\s/g, "").length > 40) {
           fillFromText(txt);
@@ -1484,7 +1596,7 @@ Recopie le texte à lire exactement, mot pour mot, avec sa ponctuation.
         }
         // PDF scanné : on rend les pages en images.
         setStatus("PDF numérisé : préparation des pages…");
-        const blobs = [];
+        const canvases = [];
         for (let p = 1; p <= pages; p++) {
           const page = await doc.getPage(p);
           const vp0 = page.getViewport({ scale: 1 });
@@ -1494,15 +1606,25 @@ Recopie le texte à lire exactement, mot pour mot, avec sa ponctuation.
           const ctx = canvas.getContext("2d");
           ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
           await page.render({ canvasContext: ctx, viewport: vp }).promise;
-          blobs.push(await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.88)));
+          canvases.push(canvas);
         }
-        await ocr(blobs.filter(Boolean));
+        if (useClaude()) {
+          const blobs = await Promise.all(canvases.map((c) => new Promise((r) => c.toBlob(r, "image/jpeg", 0.88))));
+          await ocr(blobs.filter(Boolean));
+        } else await ocrLocal(canvases);
       } else if (file.type.startsWith("image/") || /\.(jpe?g|png|webp|gif|heic)$/i.test(file.name)) {
-        if (imgLimits && imgLimits.mediaTypes && file.type && !imgLimits.mediaTypes.includes(file.type)) {
-          setStatus("Format d'image non pris en charge. Utilisez une photo JPEG ou PNG.", "error");
-          return;
+        if (useClaude()) {
+          if (imgLimits.mediaTypes && file.type && !imgLimits.mediaTypes.includes(file.type)) {
+            setStatus("Format d'image non pris en charge. Utilisez une photo JPEG ou PNG.", "error");
+            return;
+          }
+          await ocr([file]);
+        } else {
+          let canvas;
+          try { canvas = await toCanvas(file); }
+          catch { setStatus("Ce format d'image n'est pas lisible ici. Utilisez une photo JPEG ou PNG.", "error"); return; }
+          await ocrLocal([canvas]);
         }
-        await ocr([file]);
       } else {
         setStatus("Format non reconnu. Importez une image ou un PDF, ou collez le texte.", "error");
       }
@@ -1514,7 +1636,7 @@ Recopie le texte à lire exactement, mot pour mot, avec sa ponctuation.
   (async () => {
     try {
       const s = window.claude && window.claude.use ? await window.claude.use("sample") : null;
-      if (!s) { $("import-note").textContent = "PDF avec texte : extraction directe. Pour une photo ou un scan, collez le texte (la lecture d'image passe par Claude)."; return; }
+      if (!s) return;
       sampleFn = s;
       const lim = await s.limits().catch(() => null);
       imgLimits = lim && lim.images ? lim.images : null;
