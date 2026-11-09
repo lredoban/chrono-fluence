@@ -388,7 +388,7 @@ Une nuit, Léo entend un bruit étrange. On dirait quelqu'un qui souffle très f
 
 Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit une gorgée d'eau et repart vers la haie. Léo retourne se coucher. Demain, il dessinera son ami dans son carnet.`;
 
-  const APP_VERSION = "v6 · 9 nov. 2026";
+  const APP_VERSION = "v7 · 9 nov. 2026";
   const DURATION = 60;
   const SERIES = 4;
   const $ = (id) => document.getElementById(id);
@@ -455,13 +455,40 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     parts.push(rest);
     return parts;
   }
+  // Comptage des fiches de fluence : « grand-mère » et « savons-nous » font deux mots.
+  function splitWords(tok) {
+    return splitElision(tok).flatMap((p) => p.replace(/(\p{L})-(?=\p{L})/gu, "$1-\u0000").split("\u0000"));
+  }
+  // Un nombre en chiffres compte pour les mots prononcés : 1937 = mille neuf cent trente-sept = 4.
+  function under1000(n) {
+    const h = Math.floor(n / 100), r = n % 100;
+    let c = 0;
+    if (h) c += h === 1 ? 1 : 2;
+    if (r) c += [21, 31, 41, 51, 61, 71].includes(r) ? 3 : 1;
+    return c;
+  }
+  function numWords(n) {
+    if (!Number.isFinite(n) || n < 0 || n >= 1e9) return 1;
+    if (n === 0) return 1;
+    let c = 0;
+    const mil = Math.floor(n / 1e6);
+    if (mil) { c += under1000(mil) + 1; n %= 1e6; }
+    const th = Math.floor(n / 1000);
+    if (th) { c += th === 1 ? 1 : under1000(th) + 1; n %= 1000; }
+    if (n) c += under1000(n);
+    return c;
+  }
+  function wordWeight(part) {
+    const m = part.match(/^[^\p{L}\p{N}]*(\d+)[^\p{L}\p{N}]*$/u);
+    return m ? numWords(Number(m[1])) : 1;
+  }
 
   // Le micro est comparé par groupes séparés par des espaces (homophones « c'est / ses » compris), puis ramené aux mots.
   function hypKeys(text) {
     return text.split(/\s+/).map((t) => {
       const n = norm(t);
       if (!n) return null;
-      return { key: soundKey(n), parts: splitElision(t).map(norm).filter(Boolean).map(soundKey) };
+      return { key: soundKey(n), parts: splitWords(t).map(norm).filter(Boolean).map(soundKey) };
     }).filter(Boolean);
   }
 
@@ -525,6 +552,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
 
   function buildSheet() {
     words = []; units = [];
+    let cumWeight = 0;
     sheet.textContent = "";
     if (state.title) {
       const h = document.createElement("h3");
@@ -538,14 +566,16 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
         if (!tok) return;
         if (/^\s+$/.test(tok)) { el.append(" "); return; }
         const w0 = words.length, parts = [];
-        splitElision(tok).forEach((part) => {
+        splitWords(tok).forEach((part) => {
           const n = norm(part);
           if (!n) { el.append(part); return; }
           const span = document.createElement("span");
           span.className = "w";
           span.textContent = part;
           span.dataset.i = String(words.length);
-          words.push({ key: soundKey(n), el: span });
+          const weight = wordWeight(part);
+          cumWeight += weight;
+          words.push({ key: soundKey(n), el: span, weight, cum: cumWeight });
           parts.push(soundKey(n));
           el.append(span);
         });
@@ -554,7 +584,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
       sheet.append(el);
     });
     $("text-title-view").textContent = state.title || "Sans titre";
-    $("text-count").textContent = words.length + " mots";
+    $("text-count").textContent = totalWords() + " mots";
     $("sample-tag").hidden = !state.isSample;
   }
 
@@ -565,8 +595,9 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     return { phase: "idle", lastIdx: -1, liveIdx: -1, errors: new Set(), unheard: new Set(), flags: new Set(), transcript: "", inserted: 0, mode: mode };
   }
 
+  function totalWords() { return words.length ? words[words.length - 1].cum : 0; }
   function stats() {
-    const read = cur.lastIdx + 1;
+    const read = cur.lastIdx >= 0 ? words[cur.lastIdx].cum : 0;
     let err = 0;
     cur.errors.forEach((i) => { if (i <= cur.lastIdx) err++; });
     return { read, err, mclm: Math.max(0, read - err) };
@@ -1017,7 +1048,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     state.sessions.push({ read: s.read, err: s.err, mclm: s.mclm, mode: cur.mode });
     if (state.sessions.length >= SERIES) {
       const a = averages(state.sessions);
-      history.unshift({ date: new Date().toISOString(), title: state.title || "Sans titre", words: words.length, read: a.read, err: a.err, mclm: a.mclm });
+      history.unshift({ date: new Date().toISOString(), title: state.title || "Sans titre", words: totalWords(), read: a.read, err: a.err, mclm: a.mclm });
       history = history.slice(0, 50);
     }
     save();
@@ -1321,7 +1352,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
   $("cancel-edit").onclick = closeEditor;
   $("apply-text").onclick = () => {
     const text = $("text-input").value.trim();
-    const count = text.split(/\s+/).flatMap(splitElision).map(norm).filter(Boolean).length;
+    const count = text.split(/\s+/).flatMap(splitWords).map(norm).filter(Boolean).length;
     if (count < 10) { setStatus("Le texte doit contenir au moins 10 mots.", "error"); return; }
     if (state.sessions.length && state.sessions.length < SERIES && !$("apply-text").dataset.armed) { armApply(true); return; }
     state = { title: $("title-input").value.trim(), text, sessions: [], isSample: false };
