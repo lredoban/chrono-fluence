@@ -196,6 +196,15 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
 .history .empty { color: var(--muted); font-size: .92rem; margin: 0; }
 .foot { color: var(--muted); font-size: .82rem; margin: 0; }
 
+/* Replay */
+.sheet-wrap { position: relative; }
+.w.focus { outline: 2px solid var(--blue); outline-offset: 1px; }
+.pop { position: absolute; z-index: 4; background: var(--paper); border: 1.5px solid var(--blue); border-radius: .7rem; padding: .65rem; display: flex; flex-direction: column; gap: .5rem; box-shadow: 0 8px 24px rgb(0 0 0 / .2); width: max-content; max-width: calc(100% - 16px); }
+.pop-word { font-family: var(--f-read); font-size: 1.25rem; font-weight: 700; }
+.pop-row { display: flex; gap: .5rem; flex-wrap: wrap; }
+.btn.ok { border-color: var(--green); color: var(--green); }
+.replay { display: flex; gap: .7rem; align-items: center; flex-wrap: wrap; font-size: .88rem; color: var(--muted); margin-top: .6rem; }
+
 /* Mic check */
 .mic-chip[data-s="ok"] { border-color: var(--green); color: var(--green); }
 .mic-chip[data-s="ko"] { border-color: var(--red); color: var(--red); }
@@ -316,7 +325,21 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
       </div>
     </div>
 
-    <div class="sheet" id="sheet"></div>
+    <div class="sheet-wrap" id="sheet-wrap">
+      <div class="sheet" id="sheet"></div>
+      <div class="pop" id="pop" hidden role="dialog" aria-label="Vérifier le mot">
+        <span class="pop-word" id="pop-word"></span>
+        <button class="btn small" id="pop-play" type="button">▶ Réécouter</button>
+        <div class="pop-row">
+          <button class="btn small ok" id="pop-ok" type="button">Bien lu</button>
+          <button class="btn small danger" id="pop-err" type="button">Faute</button>
+        </div>
+      </div>
+    </div>
+    <div class="replay" id="replay" hidden>
+      <button class="btn small" id="full-play" type="button">▶ Réécouter toute la minute</button>
+      <span>L'enregistrement reste dans ce navigateur et disparaît quand la session est validée.</span>
+    </div>
     <details class="heard" id="heard" hidden>
       <summary>Ce que le micro a entendu</summary>
       <p id="heard-text"></p>
@@ -577,6 +600,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     }
     $("heard").hidden = !(cur.phase === "review" && cur.mode === "mic" && cur.transcript);
     $("heard-text").textContent = cur.transcript;
+    $("replay").hidden = !(cur.phase === "review" && audioBuf);
     renderHint();
   }
 
@@ -596,7 +620,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     else if (cur.phase === "ending") t = "Analyse de la lecture…";
     else if (cur.phase === "review") t = tool === "end"
       ? "Touchez le dernier mot lu (là où le bip a sonné)."
-      : "Touchez un mot pour ajouter ou retirer une faute. Le micro peut se tromper : vérifiez." ;
+      : audioBuf ? "Touchez un mot pour réécouter le passage, puis choisissez : faute ou bien lu." : "Touchez un mot pour ajouter ou retirer une faute. Le micro peut se tromper : vérifiez.";
     h.textContent = t;
   }
   function setHint(text, warn) { hintOverride = text ? { text, warn } : null; renderHint(); }
@@ -608,14 +632,19 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     if (cur.phase === "running" && cur.mode === "manual") toggleErr(i);
     else if (cur.phase === "review") {
       if (tool === "end") { cur.lastIdx = i; tool = "err"; setHint(null); }
+      else if (audioBuf) { openPop(i); return; }
       else toggleErr(i);
     }
     paint();
   });
-  function toggleErr(i) { cur.errors.has(i) ? cur.errors.delete(i) : cur.errors.add(i); cur.unheard.delete(i); }
+  function toggleErr(i) {
+    if (cur.errors.has(i)) cur.errors.delete(i);
+    else { cur.errors.add(i); if (cur.phase === "running") stamps.set(i, performance.now()); }
+    cur.unheard.delete(i);
+  }
 
   $("tool-err").onclick = () => { tool = "err"; paint(); };
-  $("tool-end").onclick = () => { tool = "end"; paint(); };
+  $("tool-end").onclick = () => { tool = "end"; stopPlaying(); closePop(); paint(); };
 
   $("mode-mic").onclick = () => { if (!SR) return; mode = "mic"; store.set("fluence.mode", mode); setHint(null); paint(); };
   $("mode-manual").onclick = () => { mode = "manual"; store.set("fluence.mode", mode); setHint(null); paint(); };
@@ -661,9 +690,15 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
         else interim += " " + r[0].transcript;
       }
       interimText = interim;
-      if (cur.phase === "running") { cur.liveIdx = align(hypKeys(finalText + " " + interimText)).lastIdx; paint(); }
+      if (cur.phase === "running") {
+        const li = align(hypKeys(finalText + " " + interimText)).lastIdx;
+        if (li > maxStamped) { stamps.set(li, performance.now()); maxStamped = li; }
+        cur.liveIdx = li;
+        paint();
+      }
     };
     rec.onerror = (ev) => {
+      if (ev.error === "audio-capture" && recorder) { recConflict = true; stopRecording(); return; }
       if (["not-allowed", "service-not-allowed", "audio-capture", "network", "language-not-supported"].includes(ev.error)) micFailed(ev.error);
     };
     rec.onend = () => {
@@ -694,6 +729,112 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     });
   }
 
+  /* ---------- Enregistrement et réécoute ---------- */
+  let mediaStream = null, recorder = null, chunks = [], recStartAbs = 0, audioBuf = null;
+  let stamps = new Map(), maxStamped = -1, recConflict = false, playing = null, popIdx = -1;
+
+  function stopStream() { if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop()); mediaStream = null; }
+
+  // Appelé pendant le clic sur « Lancer » ; l'enregistrement couvre le 3-2-1 et la minute.
+  async function startRecording() {
+    chunks = [];
+    if (!window.MediaRecorder || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    try {
+      const st = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (cur.phase !== "countdown" && cur.phase !== "running") { st.getTracks().forEach((t) => t.stop()); return; }
+      mediaStream = st;
+      const r = new MediaRecorder(st);
+      r.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      r.onstart = () => { recStartAbs = performance.now(); };
+      recStartAbs = performance.now();
+      r.start(1000);
+      recorder = r;
+    } catch { recorder = null; stopStream(); }
+  }
+
+  function stopRecording() {
+    return new Promise((res) => {
+      const r = recorder;
+      recorder = null;
+      if (!r || r.state === "inactive") { stopStream(); res(null); return; }
+      r.onstop = () => { stopStream(); res(chunks.length ? new Blob(chunks, { type: r.mimeType || chunks[0].type || "audio/webm" }) : null); };
+      try { r.stop(); } catch { stopStream(); res(null); }
+    });
+  }
+
+  async function loadAudio(blob) {
+    audioBuf = null;
+    if (!blob || !actx) return;
+    try { audioBuf = await actx.decodeAudioData(await blob.arrayBuffer()); } catch { audioBuf = null; }
+  }
+  function clearAudio() { stopPlaying(); audioBuf = null; chunks = []; }
+
+  function stopPlaying() {
+    if (playing) { try { playing.onended = null; playing.stop(); } catch {} playing = null; }
+    $("full-play").textContent = "▶ Réécouter toute la minute";
+  }
+  function playRange(start, end, onEnd) {
+    stopPlaying();
+    if (!audioBuf || !actx) return;
+    if (actx.state === "suspended") actx.resume();
+    const src = actx.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(actx.destination);
+    const s0 = Math.max(0, Math.min(start, audioBuf.duration - 0.2));
+    const d = Math.max(0.2, Math.min(end, audioBuf.duration) - s0);
+    src.onended = () => { if (playing === src) { playing = null; if (onEnd) onEnd(); } };
+    src.start(0, s0, d);
+    playing = src;
+  }
+
+  // Instant estimé d'un mot : repères posés quand le micro reconnaît un mot (ou quand on touche une faute), interpolés entre eux.
+  function wordTime(i) {
+    const pts = [[-1, t0]];
+    [...stamps.entries()].sort((a, b) => a[0] - b[0]).forEach(([k, v]) => { if (v >= pts[pts.length - 1][1]) pts.push([k, v]); });
+    const endIdx = Math.max(cur.lastIdx + 1, pts[pts.length - 1][0] + 1);
+    pts.push([endIdx, Math.max(t0 + DURATION * 1000, pts[pts.length - 1][1])]);
+    for (let k = 1; k < pts.length; k++) {
+      const [ia, ta] = pts[k - 1], [ib, tb] = pts[k];
+      if (i <= ib) return ta + (tb - ta) * (i - ia) / (ib - ia);
+    }
+    return pts[pts.length - 1][1];
+  }
+  function playWord(i) {
+    const t = (wordTime(i) - recStartAbs) / 1000;
+    playRange(t - 2.0, t + 0.8);
+  }
+
+  $("full-play").onclick = () => {
+    if (playing) { stopPlaying(); return; }
+    playRange(0, audioBuf ? audioBuf.duration : 0);
+    if (playing) $("full-play").textContent = "■ Arrêter";
+  };
+
+  const pop = $("pop");
+  function openPop(i) {
+    closePop();
+    popIdx = i;
+    const w = words[i].el;
+    w.classList.add("focus");
+    $("pop-word").textContent = w.textContent;
+    pop.hidden = false;
+    const wrap = $("sheet-wrap").getBoundingClientRect(), r = w.getBoundingClientRect();
+    pop.style.top = (r.bottom - wrap.top + 6) + "px";
+    pop.style.left = Math.max(8, Math.min(r.left - wrap.left, wrap.width - pop.offsetWidth - 8)) + "px";
+    playWord(i);
+    $("pop-play").focus({ preventScroll: true });
+  }
+  function closePop() {
+    if (popIdx >= 0 && words[popIdx]) words[popIdx].el.classList.remove("focus");
+    popIdx = -1;
+    pop.hidden = true;
+  }
+  $("pop-play").onclick = () => { if (popIdx >= 0) playWord(popIdx); };
+  $("pop-ok").onclick = () => { if (popIdx < 0) return; cur.errors.delete(popIdx); cur.unheard.delete(popIdx); stopPlaying(); closePop(); paint(); };
+  $("pop-err").onclick = () => { if (popIdx < 0) return; cur.errors.add(popIdx); cur.unheard.delete(popIdx); stopPlaying(); closePop(); paint(); };
+  document.addEventListener("click", (e) => { if (popIdx >= 0 && !pop.contains(e.target) && !e.target.closest(".w")) { stopPlaying(); closePop(); } });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && popIdx >= 0) { stopPlaying(); closePop(); } });
+
   /* ---------- Déroulé d'une session ---------- */
   let raf = 0, t0 = 0, countTimers = [];
 
@@ -716,7 +857,10 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     tone(1, 0.01, 0.0002); // débloque l'audio sur iOS
     grabWake();
     cur.phase = "countdown";
+    clearAudio(); closePop();
+    stamps = new Map(); maxStamped = -1; recConflict = false;
     if (cur.mode === "mic") startRec();
+    startRecording();
     paint();
     [3, 2, 1].forEach((n, k) => countTimers.push(setTimeout(() => { setClock(String(n), "count"); tone(660, 0.12, 0.25); }, k * 1000)));
     countTimers.push(setTimeout(go, 3000));
@@ -726,6 +870,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     countTimers = [];
     tone(990, 0.25, 0.3);
     cur.phase = "running";
+    stamps = new Map(); maxStamped = -1;
     if (cur.mode === "mic") { baseIdx = lastLen; finalText = ""; interimText = ""; listening = true; }
     t0 = performance.now();
     paint();
@@ -748,6 +893,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     dropWake();
     cur.phase = "ending";
     paint();
+    const blobP = stopRecording();
     if (cur.mode === "mic") {
       await stopRec();
       const text = (finalText + " " + interimText).replace(/\s+/g, " ").trim();
@@ -762,6 +908,8 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     } else {
       tool = "end";
     }
+    await loadAudio(await blobP);
+    if (recConflict && !hintOverride) setHint("Cet appareil ne peut pas enregistrer et transcrire en même temps : pas de réécoute pour cette session.", true);
     cur.phase = "review";
     setClock("0:00", "");
     paint();
@@ -772,6 +920,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     cancelAnimationFrame(raf);
     dropWake();
     if (rec) { micDead = true; try { rec.abort(); } catch {} }
+    stopRecording(); clearAudio(); closePop();
     cur = freshSession();
     setClock("1:00", ""); setProgress(0);
     setHint(null);
@@ -788,6 +937,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
   $("redo-btn").onclick = () => abortSession();
   $("validate-btn").onclick = () => {
     if (cur.lastIdx < 0) return;
+    clearAudio(); closePop();
     const s = stats();
     state.sessions.push({ read: s.read, err: s.err, mclm: s.mclm, mode: cur.mode });
     if (state.sessions.length >= SERIES) {
