@@ -196,6 +196,28 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
 .history .empty { color: var(--muted); font-size: .92rem; margin: 0; }
 .foot { color: var(--muted); font-size: .82rem; margin: 0; }
 
+/* Mic check */
+.mic-chip[data-s="ok"] { border-color: var(--green); color: var(--green); }
+.mic-chip[data-s="ko"] { border-color: var(--red); color: var(--red); }
+.checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .55rem; }
+.checks li { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr); column-gap: .5rem; align-items: baseline; }
+.checks li::before { content: "○"; color: var(--muted); font-weight: 700; text-align: center; }
+.checks li[data-s="run"]::before { content: "…"; color: var(--blue); }
+.checks li[data-s="ok"]::before { content: "✓"; color: var(--green); }
+.checks li[data-s="ko"]::before { content: "✕"; color: var(--red); }
+.checks li[data-s="warn"]::before { content: "!"; color: var(--red); }
+.checks li[data-s="wait"] .lbl { color: var(--muted); }
+.checks .lbl { font-weight: 700; }
+.checks .msg { grid-column: 2; font-size: .9rem; color: var(--muted); }
+.checks li[data-s="ko"] .msg, .checks li[data-s="warn"] .msg { color: var(--red); }
+.checks .msg:empty { display: none; }
+.meter { height: 8px; border-radius: 4px; background: var(--rule); overflow: hidden; }
+.meter i { display: block; height: 100%; width: 0; background: var(--green); transition: width .08s linear; }
+.say { margin: 0; font-family: var(--f-read); font-size: 1.25rem; }
+.say:empty, .heard-test:empty { display: none; }
+.heard-test { margin: 0; font-size: .92rem; color: var(--muted); }
+.code { font-family: var(--f-mono); font-size: .8rem; }
+
 @media (prefers-reduced-motion: reduce) { .w { transition: none; } }
 </style>
 
@@ -256,6 +278,7 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
           <button type="button" id="mode-mic" aria-pressed="true">Micro</button>
           <button type="button" id="mode-manual" aria-pressed="false">Manuel</button>
         </div>
+        <button class="btn small mic-chip" id="mic-btn" type="button" data-s="unknown">Tester le micro</button>
         <button class="btn primary" id="start-btn" type="button">Lancer</button>
       </div>
       <div class="progress" id="progress"><i id="progress-fill"></i></div>
@@ -269,6 +292,28 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
         <button class="btn primary small" id="validate-btn" type="button">Valider la session</button>
       </div>
       <p class="hint" id="hint" role="status"></p>
+    </div>
+
+    <div class="panel" id="mictest" hidden>
+      <div class="panel-head">
+        <h2>Vérification du micro</h2>
+        <button class="btn small" id="mictest-close" type="button">Fermer</button>
+      </div>
+      <ol class="checks" id="checks">
+        <li data-k="browser" data-s="wait"><span class="lbl">Navigateur compatible</span><span class="msg"></span></li>
+        <li data-k="secure" data-s="wait"><span class="lbl">Page sécurisée (https)</span><span class="msg"></span></li>
+        <li data-k="perm" data-s="wait"><span class="lbl">Accès au micro autorisé</span><span class="msg"></span></li>
+        <li data-k="level" data-s="wait"><span class="lbl">Son capté</span><span class="msg"></span></li>
+        <li data-k="speech" data-s="wait"><span class="lbl">Reconnaissance du français</span><span class="msg"></span></li>
+      </ol>
+      <div class="meter" aria-hidden="true"><i id="meter-fill"></i></div>
+      <p class="say" id="say"></p>
+      <p class="heard-test" id="heard-test"></p>
+      <div class="row-end">
+        <button class="btn" id="mictest-manual" type="button">Passer en manuel</button>
+        <button class="btn primary" id="speech-go" type="button" hidden>Écouter la phrase</button>
+        <button class="btn primary" id="mictest-run" type="button">Relancer le test</button>
+      </div>
     </div>
 
     <div class="sheet" id="sheet"></div>
@@ -338,6 +383,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
   let mode = store.get("fluence.mode", SR ? "mic" : "manual");
   if (!SR) mode = "manual";
   let micBlocked = false;
+  let micStatus = "unknown"; // unknown | testing | ok | ko
 
   /* ---------- Normalisation & comparaison ---------- */
   const NUM = { 0: "zero", 1: "un", 2: "deux", 3: "trois", 4: "quatre", 5: "cinq", 6: "six", 7: "sept", 8: "huit", 9: "neuf", 10: "dix", 11: "onze", 12: "douze", 13: "treize", 14: "quatorze", 15: "quinze", 16: "seize", 17: "dix-sept", 18: "dix-huit", 19: "dix-neuf", 20: "vingt", 30: "trente", 40: "quarante", 50: "cinquante", 60: "soixante", 100: "cent", 1000: "mille" };
@@ -513,6 +559,10 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     $("mode-mic").disabled = !SR || busy || cur.phase === "review";
     $("mode-manual").disabled = busy || cur.phase === "review";
     $("edit-btn").disabled = busy || cur.phase === "review";
+    const chip = $("mic-btn");
+    chip.hidden = mode !== "mic" || busy || cur.phase === "review";
+    chip.dataset.s = micStatus;
+    chip.textContent = { unknown: "Tester le micro", testing: "Test en cours…", ok: "Micro prêt ✓", ko: "Micro bloqué" }[micStatus];
 
     const rv = $("review");
     rv.hidden = cur.phase !== "review";
@@ -538,6 +588,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     let t = "";
     if (cur.phase === "idle") {
       if (state.sessions.length >= SERIES) t = "Série terminée. Le score est dans les résultats ci-dessous.";
+      else if (mode === "mic" && micStatus !== "ok") t = "Testez d'abord le micro. Le test dit précisément ce qui bloque, le cas échéant.";
       else if (mode === "mic") t = "Lancez, attendez le 3-2-1 puis lisez à voix haute. Le bip marque la fin de la minute.";
       else t = "Mode manuel : pendant la lecture, touchez les mots mal lus. Au bip, touchez le dernier mot lu.";
     } else if (cur.phase === "countdown") t = "Prêt…";
@@ -566,7 +617,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
   $("tool-err").onclick = () => { tool = "err"; paint(); };
   $("tool-end").onclick = () => { tool = "end"; paint(); };
 
-  $("mode-mic").onclick = () => { if (!SR) return; mode = "mic"; store.set("fluence.mode", mode); setHint(micBlocked ? "Le micro a été refusé tout à l'heure. Si la prochaine session échoue encore, elle passera en manuel." : null, micBlocked); paint(); };
+  $("mode-mic").onclick = () => { if (!SR) return; mode = "mic"; store.set("fluence.mode", mode); setHint(null); paint(); };
   $("mode-manual").onclick = () => { mode = "manual"; store.set("fluence.mode", mode); setHint(null); paint(); };
 
   /* ---------- Son ---------- */
@@ -591,16 +642,20 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
 
   /* ---------- Reconnaissance vocale ---------- */
   let rec = null, finalText = "", interimText = "", onRecEnd = null, micDead = false;
+  let listening = false, baseIdx = 0, lastLen = 0;
 
+  // Démarré pendant le clic (exigé par Safari), mais on n'écoute qu'après le 3-2-1.
   function startRec() {
-    finalText = ""; interimText = ""; micDead = false;
+    finalText = ""; interimText = ""; micDead = false; listening = false; baseIdx = 0; lastLen = 0;
     try {
       rec = new SR();
       rec.lang = "fr-FR"; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 1;
     } catch { micFailed(); return; }
     rec.onresult = (ev) => {
+      lastLen = ev.results.length;
+      if (!listening) return;
       let interim = "";
-      for (let k = ev.resultIndex; k < ev.results.length; k++) {
+      for (let k = Math.max(ev.resultIndex, baseIdx); k < ev.results.length; k++) {
         const r = ev.results[k];
         if (r.isFinal) finalText += " " + r[0].transcript;
         else interim += " " + r[0].transcript;
@@ -609,23 +664,23 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
       if (cur.phase === "running") { cur.liveIdx = align(hypKeys(finalText + " " + interimText)).lastIdx; paint(); }
     };
     rec.onerror = (ev) => {
-      if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(ev.error)) micFailed();
+      if (["not-allowed", "service-not-allowed", "audio-capture", "network", "language-not-supported"].includes(ev.error)) micFailed(ev.error);
     };
     rec.onend = () => {
-      if (cur.phase === "running" && !micDead) { try { rec.start(); } catch {} }
+      if ((cur.phase === "running" || cur.phase === "countdown") && !micDead) { baseIdx = 0; lastLen = 0; try { rec.start(); } catch {} }
       else if (onRecEnd) { const f = onRecEnd; onRecEnd = null; f(); }
     };
     try { rec.start(); } catch { micFailed(); }
   }
 
-  function micFailed() {
+  function micFailed(code) {
     if (micDead) return;
     micDead = true;
     micBlocked = true;
+    micStatus = "ko";
     if (cur.phase === "running" || cur.phase === "countdown") {
       cur.mode = "manual";
-      mode = "manual"; store.set("fluence.mode", mode);
-      setHint("Micro inaccessible ici : la session continue en manuel. Touchez les mots mal lus, puis le dernier mot au bip.", true);
+      setHint("Le micro a lâché (" + (code || "erreur") + ") : la session continue en manuel. Touchez les mots mal lus, puis le dernier mot au bip. Refaites le test du micro ensuite.", true);
       paint();
     }
   }
@@ -661,6 +716,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     tone(1, 0.01, 0.0002); // débloque l'audio sur iOS
     grabWake();
     cur.phase = "countdown";
+    if (cur.mode === "mic") startRec();
     paint();
     [3, 2, 1].forEach((n, k) => countTimers.push(setTimeout(() => { setClock(String(n), "count"); tone(660, 0.12, 0.25); }, k * 1000)));
     countTimers.push(setTimeout(go, 3000));
@@ -670,7 +726,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     countTimers = [];
     tone(990, 0.25, 0.3);
     cur.phase = "running";
-    if (cur.mode === "mic") startRec();
+    if (cur.mode === "mic") { baseIdx = lastLen; finalText = ""; interimText = ""; listening = true; }
     t0 = performance.now();
     paint();
     tick();
@@ -724,7 +780,10 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
 
   $("start-btn").onclick = () => {
     if (cur.phase === "countdown" || cur.phase === "running") abortSession();
-    else if (cur.phase === "idle") startSession();
+    else if (cur.phase === "idle") {
+      if (mode === "mic" && micStatus !== "ok" && state.sessions.length < SERIES) { runMicTest(); return; }
+      startSession();
+    }
   };
   $("redo-btn").onclick = () => abortSession();
   $("validate-btn").onclick = () => {
@@ -746,6 +805,172 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     if (state.sessions.length >= SERIES) $("res-h").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
     else window.scrollTo({ top: 0, behavior: "auto" });
   };
+
+  /* ---------- Test du micro ---------- */
+  const inFrame = (() => { try { return window.top !== window.self; } catch { return true; } })();
+  let testRun = 0;
+
+  function setCheck(k, s, msg) {
+    const li = document.querySelector('#checks li[data-k="' + k + '"]');
+    li.dataset.s = s;
+    li.querySelector(".msg").textContent = msg || "";
+  }
+  function setMeter(f) { $("meter-fill").style.width = (Math.max(0, Math.min(1, f)) * 100).toFixed(1) + "%"; }
+
+  function permMsg(e) {
+    const n = (e && e.name) || "";
+    if (n === "NotAllowedError" || n === "SecurityError") {
+      return inFrame
+        ? "Le micro est bloqué dans cette fenêtre intégrée. Ouvrez l'app hébergée : https://lredoban.github.io/chrono-fluence/"
+        : "Accès refusé. Cliquez sur le cadenas (ou « aA » sur iPhone) à gauche de l'adresse, autorisez le micro, puis relancez le test.";
+    }
+    if (n === "NotFoundError") return "Aucun micro détecté sur cet appareil.";
+    if (n === "NotReadableError") return "Le micro est déjà utilisé par une autre application. Fermez-la puis relancez le test.";
+    return "Accès au micro impossible (" + (n || "erreur inconnue") + ").";
+  }
+
+  function speechMsg(code) {
+    const m = {
+      "not-allowed": "La reconnaissance vocale est refusée. Sur iPhone/iPad : Réglages › Général › Clavier › activez la Dictée. Sur ordinateur : cadenas de l'adresse › Micro › Autoriser.",
+      "service-not-allowed": "Le service de reconnaissance vocale est désactivé. Sur iPhone/iPad : activez la Dictée (Réglages › Général › Clavier). Brave et Chromium ne fournissent pas ce service : utilisez Chrome, Edge ou Safari.",
+      "network": "Le service de reconnaissance est injoignable. Vérifiez la connexion. Brave, Opera et Chromium échouent toujours ici : utilisez Google Chrome, Edge ou Safari.",
+      "audio-capture": "Le navigateur n'arrive pas à capter le micro. Une autre application l'utilise peut-être.",
+      "no-speech": "Rien n'a été reconnu. Parlez plus près du micro et relancez le test.",
+      "language-not-supported": "Le français n'est pas disponible pour la reconnaissance vocale sur cet appareil.",
+    }[code];
+    return m || "La reconnaissance a échoué.";
+  }
+
+  function measure(stream, ms) {
+    return new Promise((res) => {
+      try {
+        actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+        if (actx.state === "suspended") actx.resume();
+        const src = actx.createMediaStreamSource(stream);
+        const an = actx.createAnalyser();
+        an.fftSize = 1024;
+        src.connect(an);
+        const buf = new Float32Array(an.fftSize);
+        let peak = 0, loud = 0;
+        const t0m = performance.now();
+        const step = () => {
+          an.getFloatTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+          const rms = Math.sqrt(sum / buf.length);
+          peak = Math.max(peak, rms);
+          setMeter(rms * 8);
+          if (rms > 0.03) loud++;
+          if (loud > 15 || performance.now() - t0m > ms) { try { src.disconnect(); } catch {} setMeter(0); res(peak); return; }
+          requestAnimationFrame(step);
+        };
+        step();
+      } catch { res(-1); }
+    });
+  }
+
+  function testSpeech(ms) {
+    return new Promise((res) => {
+      let r;
+      try { r = new SR(); } catch { res({ ok: false, error: "start" }); return; }
+      r.lang = "fr-FR"; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+      let text = "", done = false, err = null, to = 0;
+      const finish = (o) => { if (done) return; done = true; clearTimeout(to); try { r.abort(); } catch {} res(o); };
+      r.onresult = (ev) => {
+        text = Array.from(ev.results).map((x) => x[0].transcript).join(" ").trim();
+        $("heard-test").textContent = "Entendu : « " + text + " »";
+        if (ev.results[ev.results.length - 1].isFinal && text) finish({ ok: true, text });
+      };
+      r.onerror = (ev) => { err = ev.error; if (ev.error !== "no-speech") finish({ ok: false, error: ev.error }); };
+      r.onend = () => finish(text ? { ok: true, text } : { ok: false, error: err || "no-speech" });
+      to = setTimeout(() => finish(text ? { ok: true, text } : { ok: false, error: "no-speech" }), ms);
+      try { r.start(); } catch (e) { finish({ ok: false, error: (e && e.name) || "start" }); }
+    });
+  }
+
+  function failTest(k, msg, code) {
+    setCheck(k, "ko", msg);
+    if (code) {
+      const li = document.querySelector('#checks li[data-k="' + k + '"] .msg');
+      const c = document.createElement("span");
+      c.className = "code";
+      c.textContent = "  (code : " + code + ")";
+      li.append(c);
+    }
+    micStatus = "ko";
+    $("say").textContent = "";
+    $("speech-go").hidden = true;
+    $("mictest-run").hidden = false;
+    paint();
+  }
+
+  // Appelé depuis un clic : getUserMedia part dans le geste de l'utilisateur.
+  async function runMicTest() {
+    const run = ++testRun;
+    $("mictest").hidden = false;
+    $("speech-go").hidden = true;
+    $("mictest-run").hidden = true;
+    ["browser", "secure", "perm", "level", "speech"].forEach((k) => setCheck(k, "wait"));
+    $("say").textContent = ""; $("heard-test").textContent = ""; setMeter(0);
+    micStatus = "testing"; setHint(null); paint();
+
+    if (!SR) return failTest("browser", "Pas de reconnaissance vocale dans ce navigateur. Utilisez Chrome ou Edge (ordinateur, Android) ou Safari (iPhone, iPad).");
+    const brave = navigator.brave && typeof navigator.brave.isBrave === "function";
+    setCheck("browser", brave ? "warn" : "ok", brave ? "Brave ne fournit pas la reconnaissance vocale : le dernier test échouera probablement." : "");
+
+    if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return failTest("secure", "La page doit être ouverte en https:// (ou sur localhost).");
+    }
+    setCheck("secure", "ok");
+
+    setCheck("perm", "run", "Autorisez le micro si le navigateur le demande.");
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { if (run === testRun) failTest("perm", permMsg(e), e && e.name); return; }
+    if (run !== testRun) { stream.getTracks().forEach((t) => t.stop()); return; }
+    setCheck("perm", "ok");
+
+    setCheck("level", "run", "Dites quelques mots : la barre verte doit bouger.");
+    const peak = await measure(stream, 6000);
+    stream.getTracks().forEach((t) => t.stop());
+    if (run !== testRun) return;
+    if (peak < 0) setCheck("level", "ok", "Mesure impossible sur ce navigateur, on continue.");
+    else if (peak < 0.015) setCheck("level", "warn", "Son très faible. Vérifiez que le bon micro est sélectionné, ou rapprochez-vous.");
+    else setCheck("level", "ok");
+
+    setCheck("speech", "run", "Appuyez sur « Écouter la phrase », puis lisez-la à voix haute.");
+    $("say").textContent = "« Le petit hérisson boit une gorgée d'eau. »";
+    $("speech-go").hidden = false;
+    $("speech-go").focus();
+  }
+
+  // Second clic : Safari exige que la reconnaissance démarre dans un geste.
+  $("speech-go").onclick = async () => {
+    const run = testRun;
+    $("speech-go").hidden = true;
+    setCheck("speech", "run", "J'écoute…");
+    const r = await testSpeech(9000);
+    if (run !== testRun) return;
+    if (!r.ok) return failTest("speech", speechMsg(r.error), r.error);
+    setCheck("speech", "ok", "Entendu : « " + r.text + " »");
+    $("heard-test").textContent = "";
+    $("say").textContent = "";
+    $("mictest-run").hidden = false;
+    micStatus = "ok"; micBlocked = false;
+    setHint("Micro prêt. Vous pouvez lancer la session.");
+    paint();
+  };
+
+  $("mic-btn").onclick = () => runMicTest();
+  $("mictest-run").onclick = () => runMicTest();
+  $("mictest-close").onclick = () => { testRun++; $("mictest").hidden = true; if (micStatus === "testing") micStatus = "unknown"; paint(); };
+  $("mictest-manual").onclick = () => { testRun++; $("mictest").hidden = true; if (micStatus === "testing") micStatus = "unknown"; mode = "manual"; store.set("fluence.mode", mode); setHint(null); paint(); };
+
+  try {
+    navigator.permissions?.query({ name: "microphone" }).then((p) => {
+      if (p.state === "denied" && micStatus === "unknown") { micStatus = "ko"; paint(); }
+    }).catch(() => {});
+  } catch {}
 
   /* ---------- Résultats ---------- */
   function averages(list) {
