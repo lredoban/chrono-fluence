@@ -201,10 +201,10 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
 /* Replay */
 .sheet-wrap { position: relative; }
 .w.focus { outline: 2px solid var(--blue); outline-offset: 1px; }
-.pop { position: absolute; z-index: 4; background: var(--paper); border: 1.5px solid var(--blue); border-radius: .7rem; padding: .65rem; display: flex; flex-direction: column; gap: .5rem; box-shadow: 0 8px 24px rgb(0 0 0 / .2); width: max-content; max-width: calc(100% - 16px); }
-.pop-word { font-family: var(--f-read); font-size: 1.25rem; font-weight: 700; }
-.pop-row { display: flex; gap: .5rem; flex-wrap: wrap; }
+.pop { position: absolute; z-index: 4; background: var(--paper); border: 1.5px solid var(--blue); border-radius: .6rem; padding: .35rem; display: flex; align-items: center; gap: .35rem; box-shadow: 0 6px 18px rgb(0 0 0 / .2); width: max-content; max-width: calc(100% - 16px); font-family: var(--f-body); }
 .btn.ok { border-color: var(--green); color: var(--green); }
+.pop .btn.ok[aria-pressed="true"] { background: var(--green); color: var(--paper); }
+.pop .btn.danger[aria-pressed="true"] { background: var(--red); color: var(--paper); }
 .replay { display: flex; gap: .7rem; align-items: center; flex-wrap: wrap; font-size: .88rem; color: var(--muted); margin-top: .6rem; }
 
 /* Mic check */
@@ -329,13 +329,10 @@ details.heard p { margin: .4rem 0 0; font-family: var(--f-read); color: var(--in
 
     <div class="sheet-wrap" id="sheet-wrap">
       <div class="sheet" id="sheet"></div>
-      <div class="pop" id="pop" hidden role="dialog" aria-label="Vérifier le mot">
-        <span class="pop-word" id="pop-word"></span>
-        <button class="btn small" id="pop-play" type="button">▶ Réécouter</button>
-        <div class="pop-row">
-          <button class="btn small ok" id="pop-ok" type="button">Bien lu</button>
-          <button class="btn small danger" id="pop-err" type="button">Faute</button>
-        </div>
+      <div class="pop" id="pop" hidden role="group" aria-label="Corriger le mot">
+        <button class="btn small" id="pop-play" type="button" aria-label="Réécouter le passage">▶ Écouter</button>
+        <button class="btn small ok" id="pop-ok" type="button" aria-pressed="false">Bien lu</button>
+        <button class="btn small danger" id="pop-err" type="button" aria-pressed="false">Faute</button>
       </div>
     </div>
     <div class="replay" id="replay" hidden>
@@ -391,7 +388,7 @@ Une nuit, Léo entend un bruit étrange. On dirait quelqu'un qui souffle très f
 
 Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit une gorgée d'eau et repart vers la haie. Léo retourne se coucher. Demain, il dessinera son ami dans son carnet.`;
 
-  const APP_VERSION = "v5 · 9 nov. 2026";
+  const APP_VERSION = "v6 · 9 nov. 2026";
   const DURATION = 60;
   const SERIES = 4;
   const $ = (id) => document.getElementById(id);
@@ -589,6 +586,7 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     }
     sheet.dataset.phase = cur.phase;
     sheet.dataset.tap = running ? "1" : "0";
+    if (popIdx >= 0) syncPop();
     renderBar();
   }
 
@@ -656,7 +654,9 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     else if (cur.phase === "ending") t = "Analyse de la lecture…";
     else if (cur.phase === "review") t = tool === "end"
       ? "Touchez le dernier mot lu (là où le bip a sonné)."
-      : audioBuf ? "Touchez un mot pour réécouter le passage, puis choisissez : faute ou bien lu." : "Touchez un mot pour ajouter ou retirer une faute. Le micro peut se tromper : vérifiez.";
+      : hoverable
+        ? "Survolez un mot pour le corriger : Bien lu ou Faute" + (audioBuf ? ", ▶ pour réécouter" : "") + ". Un clic sur le mot inverse directement."
+        : "Touchez un mot pour le corriger : Bien lu ou Faute" + (audioBuf ? ", ▶ pour réécouter" : "") + ".";
     h.textContent = t;
   }
   function setHint(text, warn) { hintOverride = text ? { text, warn } : null; renderHint(); }
@@ -668,8 +668,8 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     if (cur.phase === "running") toggleFlag(i);
     else if (cur.phase === "review") {
       if (tool === "end") { cur.lastIdx = i; tool = "err"; setHint(null); }
-      else if (audioBuf) { openPop(i); return; }
-      else toggleErr(i);
+      else if (hoverable) { toggleErr(i); }
+      else { openPop(i); return; }
     }
     paint();
   });
@@ -851,29 +851,63 @@ Le chat s'éloigne. Quelques minutes plus tard, le hérisson se déroule, boit u
     if (playing) $("full-play").textContent = "■ Arrêter";
   };
 
+  // Correction : bulle au survol sur ordinateur, au toucher sur mobile. Le son ne part que sur ▶.
   const pop = $("pop");
+  const hoverable = matchMedia("(hover: hover) and (pointer: fine)").matches;
+  let closeTimer = 0;
+
+  function syncPop() {
+    if (popIdx < 0) return;
+    const e = cur.errors.has(popIdx);
+    $("pop-err").setAttribute("aria-pressed", String(e));
+    $("pop-ok").setAttribute("aria-pressed", String(!e));
+  }
   function openPop(i) {
-    closePop();
+    clearTimeout(closeTimer);
+    if (popIdx >= 0 && words[popIdx]) words[popIdx].el.classList.remove("focus");
     popIdx = i;
     const w = words[i].el;
     w.classList.add("focus");
-    $("pop-word").textContent = w.textContent;
+    $("pop-play").hidden = !audioBuf;
+    syncPop();
     pop.hidden = false;
     const wrap = $("sheet-wrap").getBoundingClientRect(), r = w.getBoundingClientRect();
-    pop.style.top = (r.bottom - wrap.top + 6) + "px";
-    pop.style.left = Math.max(8, Math.min(r.left - wrap.left, wrap.width - pop.offsetWidth - 8)) + "px";
-    playWord(i);
-    $("pop-play").focus({ preventScroll: true });
+    let top = r.top - wrap.top - pop.offsetHeight - 6;
+    if (top < 0) top = r.bottom - wrap.top + 6;
+    pop.style.top = top + "px";
+    pop.style.left = Math.max(8, Math.min(r.left - wrap.left + r.width / 2 - pop.offsetWidth / 2, wrap.width - pop.offsetWidth - 8)) + "px";
   }
   function closePop() {
+    clearTimeout(closeTimer);
     if (popIdx >= 0 && words[popIdx]) words[popIdx].el.classList.remove("focus");
     popIdx = -1;
     pop.hidden = true;
   }
+  function decide(isErr) {
+    if (popIdx < 0) return;
+    if (isErr) cur.errors.add(popIdx);
+    else { cur.errors.delete(popIdx); cur.flags.delete(popIdx); }
+    cur.unheard.delete(popIdx);
+    if (!hoverable) closePop();
+    paint();
+  }
   $("pop-play").onclick = () => { if (popIdx >= 0) playWord(popIdx); };
-  $("pop-ok").onclick = () => { if (popIdx < 0) return; cur.errors.delete(popIdx); cur.flags.delete(popIdx); cur.unheard.delete(popIdx); stopPlaying(); closePop(); paint(); };
-  $("pop-err").onclick = () => { if (popIdx < 0) return; cur.errors.add(popIdx); cur.unheard.delete(popIdx); stopPlaying(); closePop(); paint(); };
-  document.addEventListener("click", (e) => { if (popIdx >= 0 && !pop.contains(e.target) && !e.target.closest(".w")) { stopPlaying(); closePop(); } });
+  $("pop-ok").onclick = () => decide(false);
+  $("pop-err").onclick = () => decide(true);
+
+  sheet.addEventListener("mouseover", (e) => {
+    if (!hoverable || cur.phase !== "review" || tool !== "err") return;
+    const w = e.target.closest(".w");
+    if (!w) return;
+    clearTimeout(closeTimer);
+    const i = Number(w.dataset.i);
+    if (i !== popIdx) openPop(i);
+  });
+  const scheduleClose = () => { if (!hoverable) return; clearTimeout(closeTimer); closeTimer = setTimeout(closePop, 350); };
+  sheet.addEventListener("mouseleave", scheduleClose);
+  pop.addEventListener("mouseenter", () => clearTimeout(closeTimer));
+  pop.addEventListener("mouseleave", scheduleClose);
+  document.addEventListener("click", (e) => { if (popIdx >= 0 && !pop.contains(e.target) && !e.target.closest(".w")) closePop(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && popIdx >= 0) { stopPlaying(); closePop(); } });
 
   /* ---------- Déroulé d'une session ---------- */
